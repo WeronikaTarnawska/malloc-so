@@ -46,7 +46,7 @@ static word_t *last;       /* Points at last block */
 
 /* --=[ boundary tag handling ]=-------------------------------------------- */
 
-static inline word_t bt_size(word_t *bt) {
+static inline word_t bt_sibt_freeze(word_t *bt) {
   return *bt & ~(USED | PREVFREE);
 }
 
@@ -127,7 +127,7 @@ int mm_init(void) {
 
 /* --=[ malloc ]=----------------------------------------------------------- */
 
-#if 0
+#if 1
 /* First fit startegy. */
 static word_t *find_fit(size_t reqsz) {
 }
