@@ -46,7 +46,8 @@ static word_t *last;       /* Points at last block */
 
 /* --=[ boundary tag handling ]=-------------------------------------------- */
 
-static inline word_t bt_sibt_freeze(word_t *bt) { 
+/* this block is NOT USED and previous block is USED  (po co to???)*/
+static inline word_t bt_sibt_freeze(word_t *bt) {
   return *bt & ~(USED | PREVFREE);
 }
 
@@ -56,6 +57,14 @@ static inline int bt_used(word_t *bt) {
 
 static inline int bt_free(word_t *bt) {
   return !(*bt & USED);
+}
+
+static inline size_t bt_size(word_t *bt) {
+  return *bt & -ALIGNMENT;
+}
+
+static inline bt_flags bt_getflags(word_t *bt) {
+  return *bt & ~(-ALIGNMENT);
 }
 
 /* Given boundary tag address calculate it's buddy address. */
@@ -70,7 +79,7 @@ static inline word_t *bt_fromptr(void *ptr) {
 
 /* Creates boundary tag(s) for given block. */
 static inline void bt_make(word_t *bt, size_t size, bt_flags flags) {
-
+  *bt = size | flags;
 }
 
 /* Previous block free flag handling for optimized boundary tags. */
@@ -94,10 +103,42 @@ static inline void *bt_payload(word_t *bt) {
 
 /* Returns address of next block or NULL. */
 static inline word_t *bt_next(word_t *bt) {
+  word_t *next = (void *)bt + bt_size(bt);
+  if (/*bt == last ||*/ next == heap_end)
+    return NULL;
+  return next;
 }
 
 /* Returns address of previous block or NULL. */
 static inline word_t *bt_prev(word_t *bt) {
+  if (bt == heap_start)
+    return NULL;
+  word_t *prev_footer = (void *)bt - sizeof(word_t);
+  return (void *)prev_footer - bt_size(prev_footer) + sizeof(word_t);
+}
+
+static inline void split_block(word_t *bt, size_t size) {
+  size_t oldsz = bt_size(bt);
+  bt_flags flags = bt_getflags(bt);
+  bt_make(bt, size, flags);
+
+  word_t *p = bt_next(bt);
+  bt_make(p, oldsz - size, flags);
+  bt_make(bt_footer(p), oldsz - size, flags);
+  if (bt == last)
+    last = p;
+
+  bt_make(bt_footer(bt), size, flags);
+}
+
+static inline void merge_blocks(word_t *a, word_t *b) {
+  size_t siz = bt_size(a) + bt_size(b);
+  bt_flags flags = bt_getflags(a);
+  word_t *footer = (void *)a + siz - sizeof(word_t);
+  bt_make(a, siz, flags);
+  bt_make(footer, siz, flags);
+  if (b == last)
+    last = a;
 }
 
 /* --=[ miscellanous procedures ]=------------------------------------------ */
@@ -105,6 +146,7 @@ static inline word_t *bt_prev(word_t *bt) {
 /* Calculates block size incl. header, footer & payload,
  * and aligns it to block boundary (ALIGNMENT). */
 static inline size_t blksz(size_t size) {
+  return (size + ((sizeof(word_t)) << 1) + ALIGNMENT - 1) & -ALIGNMENT;
 }
 
 static void *morecore(size_t size) {
@@ -131,6 +173,31 @@ int mm_init(void) {
 #if 1
 /* First fit startegy. */
 static word_t *find_fit(size_t reqsz) {
+  if (!heap_start) {
+    word_t *res = morecore(reqsz);
+    last = res;
+    heap_end = (void *)last + reqsz;
+    heap_start = res;
+    return res;
+  }
+
+  word_t *bt = heap_start;
+  while (bt) {
+    // msg("loop\n");
+    if (bt_free(bt) && bt_size(bt) == reqsz) {
+      return bt;
+    } else if (bt_free(bt) && bt_size(bt) > reqsz) {
+      // msg("alloc with split\n");
+      split_block(bt, reqsz);
+      return bt;
+    } else {
+      bt = bt_next(bt);
+    }
+  }
+  word_t *res = morecore(reqsz);
+  last = res;
+  heap_end = (void *)last + reqsz;
+  return res;
 }
 #else
 /* Best fit startegy. */
@@ -139,16 +206,71 @@ static word_t *find_fit(size_t reqsz) {
 #endif
 
 void *malloc(size_t size) {
+  size_t reqsz = blksz(size);
+  debug("size: %ld, required size: %ld", size, reqsz);
+  mm_checkheap(1);
+  word_t *fit = find_fit(reqsz);
+  bt_make(fit, reqsz, USED);
+  word_t *foot = bt_footer(fit);
+  bt_make(foot, reqsz, USED);
+  return bt_payload(fit);
 }
 
 /* --=[ free ]=------------------------------------------------------------- */
 
 void free(void *ptr) {
+  debug("free %ld", (long)ptr - (long)heap_start);
+  mm_checkheap(1);
+  if (!ptr)
+    return;
+  word_t *bt = bt_fromptr(ptr);
+  bt_make(bt, bt_size(bt), FREE);
+  msg("freed\n");
+  word_t *prev = bt_prev(bt);
+  word_t *next = bt_next(bt);
+  if (next && bt_free(next)) {
+    msg("next free\n");
+    merge_blocks(bt, next);
+    msg("merged with next\n");
+  }
+  if (prev && bt_free(prev)) {
+    msg("prev free\n");
+    merge_blocks(prev, bt);
+    msg("merged with prev\n");
+  }
+  msg("merged\n");
 }
 
 /* --=[ realloc ]=---------------------------------------------------------- */
 
 void *realloc(void *old_ptr, size_t size) {
+  /* If size == 0 then this is just free, and we return NULL. */
+  if (size == 0) {
+    free(old_ptr);
+    return NULL;
+  }
+
+  /* If old_ptr is NULL, then this is just malloc. */
+  if (!old_ptr)
+    return malloc(size);
+
+  void *new_ptr = malloc(size);
+
+  /* If malloc() fails, the original block is left untouched. */
+  if (!new_ptr)
+    return NULL;
+
+  /* Copy the old data. */
+  word_t *bt = bt_fromptr(old_ptr);
+  size_t old_size = bt_size(bt);
+  if (size < old_size)
+    old_size = size;
+  memcpy(new_ptr, old_ptr, old_size);
+
+  /* Free the old block. */
+  free(old_ptr);
+
+  return new_ptr;
 }
 
 /* --=[ calloc ]=----------------------------------------------------------- */
@@ -164,4 +286,49 @@ void *calloc(size_t nmemb, size_t size) {
 /* --=[ mm_checkheap ]=----------------------------------------------------- */
 
 void mm_checkheap(int verbose) {
+  // Printy
+
+  if (verbose) {
+    int i = 0;
+    for (word_t *b = heap_start; b; b = bt_next(b), i++) {
+      debug("block number %d, size: %ld, used: %d", i, bt_size(b), bt_used(b));
+    }
+  }
+
+  // Każdy blok na liście wolnych bloków jest oznaczony jako wolny.
+  // Każdy blok oznaczony jako wolny jest na liście wszystkich wolnych bloków.
+
+  // Nie istnieją dwa przyległe do siebie bloki, które są wolne.
+  for (word_t *b = heap_start; b; b = bt_next(b)) {
+    if (!heap_start)
+      break;
+    if (b == heap_start)
+      continue;
+    if (bt_free(b) && bt_free(bt_prev(b))) {
+      msg("two contiguous free blocks\n");
+      exit(1);
+    }
+  }
+
+  // Wskaźnik na poprzedni i następny blok odnoszą się do adresów należących do
+  // zarządzanej sterty.
+  for (word_t *b = heap_start; b; b = bt_next(b)) {
+    if (!heap_start)
+      break;
+    word_t *p = bt_prev(b);
+    // word_t *n = bt_next(b);
+    if ((p && (void *)p < (void *)heap_start) //||
+        /*(n && (void *)n > (void *)heap_end)*/) {
+      // debug("prev %d, this %d, next %d", *p, *b, *n);
+      msg("address not in heap\n");
+      exit(1);
+    }
+  }
+
+  // Wskaźniki na liście wolnych bloków wskazują na początki wolnych bloków.
+
+  // Ostatni blok faktycznie jest ostatni
+  if (last && bt_next(last)) {
+    msg("last does not point to the last block\n");
+  }
 }
