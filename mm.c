@@ -179,7 +179,7 @@ int mm_init(void) {
 
 /* --=[ malloc ]=----------------------------------------------------------- */
 
-#if 1
+#if 0
 /* First fit startegy. */
 static word_t *find_fit(size_t reqsz) {
   if (!heap_start) {
@@ -219,6 +219,51 @@ static word_t *find_fit(size_t reqsz) {
 #else
 /* Best fit startegy. */
 static word_t *find_fit(size_t reqsz) {
+  if (!heap_start) {
+    word_t *res = morecore(reqsz);
+    last = res;
+    heap_end = (void *)last + reqsz;
+    heap_start = res;
+    return res;
+  }
+
+  word_t *bt = heap_start;
+  word_t *res = NULL;
+  int best = 0x7FFFFFFF;
+
+  while (bt) {
+    // msg("loop\n");
+    if (bt_free(bt) && bt_size(bt) == reqsz) {
+      msg("free block of exact size\n");
+      return bt;
+    } else if (bt_free(bt) && bt_size(bt) > reqsz) {
+      int val = bt_size(bt) - reqsz;
+      if (val < best) {
+        // msg("new bestfit");
+        best = val;
+        res = bt;
+      }
+    }
+    bt = bt_next(bt);
+  }
+  if (res) {
+    msg("alloc with split\n");
+    split_block(res, reqsz);
+    return res;
+  }
+
+  msg("alloc using morecore\n");
+  bt_flags pf = bt_free(last);
+  // debug("last free? %d", pf);
+  res = morecore(reqsz);
+  last = res;
+  heap_end = (void *)last + reqsz;
+  if (pf)
+    bt_set_prevfree(res);
+  else
+    bt_clr_prevfree(res);
+
+  return res;
 }
 #endif
 
@@ -249,28 +294,28 @@ void free(void *ptr) {
   bt_make(bt, bt_size(bt), FREE | bt_get_prevfree(bt));
   word_t *footer = bt_footer(bt);
   bt_make(footer, bt_size(bt), FREE | bt_get_prevfree(bt));
-  msg("freed\n");
+  // msg("freed\n");
 
   word_t *next = bt_next(bt);
   if (next && bt_free(next)) {
-    msg("next free\n");
+    // msg("next free\n");
     merge_blocks(bt, next);
-    msg("merged with next\n");
+    // msg("merged with next\n");
   }
   if (bt_get_prevfree(bt)) {
     word_t *prev = bt_prev(bt);
-    msg("prev free\n");
+    // msg("prev free\n");
     merge_blocks(prev, bt);
     bt = prev;
-    msg("merged with prev\n");
+    // msg("merged with prev\n");
   }
 
   next = bt_next(bt);
   if (next) {
-    msg("\tsetprevfree\n");
+    // msg("\tsetprevfree\n");
     bt_set_prevfree(next);
   }
-  msg("merged\n");
+  // msg("merged\n");
 }
 
 /* --=[ realloc ]=---------------------------------------------------------- */
