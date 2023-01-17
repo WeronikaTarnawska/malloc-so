@@ -104,7 +104,7 @@ static inline void *bt_payload(word_t *bt) {
 /* Returns address of next block or NULL. */
 static inline word_t *bt_next(word_t *bt) {
   word_t *next = (void *)bt + bt_size(bt);
-  if (/*bt == last ||*/ next == heap_end)
+  if (next == heap_end)
     return NULL;
   return next;
 }
@@ -161,7 +161,7 @@ static inline int fl_search(word_t *bt) {
 }
 
 static inline void fl_add(word_t *bt) {
-  debug("%d", *bt);
+  // debug("%d", *bt);
   if (free_list) {
     word_t *prev = fl_prev(free_list);
     fl_set_next(prev, bt);
@@ -178,10 +178,12 @@ static inline void fl_add(word_t *bt) {
 
 static inline void fl_remove(word_t *bt) {
   // debug("%d", *bt);
+
   // if (!fl_search(bt)) {
   //   msg("no such block on the list :(\n");
   //   exit(EXIT_FAILURE);
   // }
+  msg(":)\n");
 
   if (!free_list) {
   } else if (bt == fl_next(bt)) {
@@ -201,7 +203,6 @@ static inline void fl_remove(word_t *bt) {
 }
 
 static inline void merge_blocks(word_t *a, word_t *b) {
-  // fl_remove(b);
   size_t siz = bt_size(a) + bt_size(b);
   bt_flags flags = bt_getflags(a);
   word_t *footer = (void *)a + siz - sizeof(word_t);
@@ -212,7 +213,10 @@ static inline void merge_blocks(word_t *a, word_t *b) {
 }
 
 static inline void split_block(word_t *bt, size_t size) {
+  debug("free: size: %ld, next bt %d, prev bt %d", bt_size(bt), *fl_next(bt),
+        *fl_prev(bt));
   fl_remove(bt);
+
   size_t oldsz = bt_size(bt);
   bt_flags flags = bt_getflags(bt);
   bt_make(bt, size, flags);
@@ -332,40 +336,56 @@ static word_t *find_fit(size_t reqsz) {
     last = res;
     heap_end = (void *)last + reqsz;
     heap_start = res;
+    bt_make(res, reqsz, USED);
     return res;
   }
 
-  word_t *bt = heap_start;
-  word_t *res = NULL;
-  int best = 0x7FFFFFFF;
-
-  while (bt) {
-    // msg("loop\n");
-    if (bt_free(bt) && bt_size(bt) == reqsz) {
-      msg("free block of exact size\n");
-      return bt;
-    } else if (bt_free(bt) && bt_size(bt) > reqsz) {
-      int val = bt_size(bt) - reqsz;
-      if (val < best) {
-        // msg("new bestfit");
-        best = val;
-        res = bt;
+  if (free_list) {
+    word_t *bt = free_list;
+    word_t *result = NULL;
+    int best = 0x7fffffff;
+    do {
+      // msg("loop\n");
+      if (bt_size(bt) == reqsz) {
+        msg("free block of exact size\n");
+        fl_remove(bt);
+        bt_flags flags = bt_get_prevfree(bt) | USED;
+        bt_make(bt, reqsz, flags);
+        return bt;
+      } else if (bt_size(bt) > reqsz) {
+        int val = bt_size(bt) - reqsz;
+        if (val < best) {
+          // msg("new bestfit");
+          best = val;
+          result = bt;
+        } else {
+          bt = fl_next(bt);
+        }
       }
+    } while (bt != free_list);
+
+    if (result) {
+      bt = result;
+      msg("alloc with split\n");
+      if (bt_size(bt) - reqsz > (sizeof(word_t *) * 2 + sizeof(word_t) * 2)) {
+        split_block(bt, reqsz);
+        bt_flags flags = bt_get_prevfree(bt) | USED;
+        bt_make(bt, reqsz, flags);
+      } else {
+        bt_flags flags = bt_get_prevfree(bt) | USED;
+        bt_make(bt, bt_size(bt), flags);
+      }
+      fl_remove(bt);
+      return bt;
     }
-    bt = bt_next(bt);
-  }
-  if (res) {
-    msg("alloc with split\n");
-    split_block(res, reqsz);
-    return res;
   }
 
   msg("alloc using morecore\n");
   bt_flags pf = bt_free(last);
-  // debug("last free? %d", pf);
-  res = morecore(reqsz);
+  word_t *res = morecore(reqsz);
   last = res;
   heap_end = (void *)last + reqsz;
+  bt_make(res, reqsz, USED);
   if (pf)
     bt_set_prevfree(res);
   else
@@ -379,7 +399,6 @@ void *malloc(size_t size) {
   size_t reqsz = blksz(size);
   debug("size: %ld, required size: %ld", size, reqsz);
   word_t *fit = find_fit(reqsz);
-  // msg(":)\n");
 
   word_t *next = bt_next(fit);
   if (next)
@@ -401,18 +420,18 @@ void free(void *ptr) {
   bt_make(bt, bt_size(bt), FREE | bt_get_prevfree(bt));
   word_t *footer = bt_footer(bt);
   bt_make(footer, bt_size(bt), FREE | bt_get_prevfree(bt));
-  msg("freed\n");
+  // msg("freed\n");
 
   word_t *next = bt_next(bt);
   if (next && bt_free(next)) {
-    msg("next free\n");
+    // msg("next free\n");
     fl_remove(next);
     merge_blocks(bt, next);
     msg("merged with next\n");
   }
   if (bt_get_prevfree(bt)) {
     word_t *prev = bt_prev(bt);
-    msg("prev free\n");
+    // msg("prev free\n");
     fl_remove(prev);
     merge_blocks(prev, bt);
     bt = prev;
@@ -421,7 +440,6 @@ void free(void *ptr) {
   fl_add(bt);
   next = bt_next(bt);
   if (next) {
-    msg("\tsetprevfree\n");
     bt_set_prevfree(next);
   }
   // mm_checkheap(VERBOSE);
@@ -430,6 +448,8 @@ void free(void *ptr) {
 /* --=[ realloc ]=---------------------------------------------------------- */
 
 void *realloc(void *old_ptr, size_t size) {
+  debug("old_ptr: %d, new_size: %ld", *bt_fromptr(old_ptr), size);
+
   /* If size == 0 then this is just free, and we return NULL. */
   if (size == 0) {
     free(old_ptr);
@@ -440,14 +460,50 @@ void *realloc(void *old_ptr, size_t size) {
   if (!old_ptr)
     return malloc(size);
 
-  void *new_ptr = malloc(size);
+  /* If old block is enough, we can just return it */
+  word_t *bt = bt_fromptr(old_ptr);
+  if (bt_size(bt) - sizeof(word_t) >= size)
+    return old_ptr;
 
+  /* If it's the last block we can use morecore */
+  if (bt == last) {
+    size_t reqsz = blksz(size - bt_size(bt));
+    morecore(reqsz);
+    bt_make(bt, bt_size(bt) + reqsz, bt_getflags(bt));
+    heap_end = (void *)bt + bt_size(bt);
+  }
+
+  /* If next block is free we can merge it with old block */
+  word_t *next = bt_next(bt);
+  if (next && bt_free(next) &&
+      bt_size(bt) + bt_size(next) - sizeof(word_t) >= size) {
+    size_t reqsz = blksz(size);
+    size_t addsize = reqsz - bt_size(bt);
+    if (addsize < sizeof(word_t) * 2 + sizeof(word_t *) * 2)
+      addsize = 2 * ALIGNMENT;
+
+    if (bt_size(next) - addsize >= 2 * ALIGNMENT) {
+      // msg("split\n");
+      split_block(next, addsize);
+    }
+
+    fl_remove(next);
+    merge_blocks(bt, next);
+
+    next = bt_next(bt);
+    if (next)
+      bt_clr_prevfree(next);
+    // mm_checkheap(VERBOSE);
+    return old_ptr;
+  }
+
+  void *new_ptr = malloc(size);
   /* If malloc() fails, the original block is left untouched. */
   if (!new_ptr)
     return NULL;
 
   /* Copy the old data. */
-  word_t *bt = bt_fromptr(old_ptr);
+  // word_t *bt = bt_fromptr(old_ptr);
   size_t old_size = bt_size(bt);
   if (size < old_size)
     old_size = size;
