@@ -214,7 +214,7 @@ static inline void merge_blocks(word_t *a, word_t *b) {
 }
 
 static inline void split_block(word_t *bt, size_t size) {
-  debug("block size: %ld, new size %ld", bt_size(bt), size);
+  // debug("block size: %ld, new size %ld", bt_size(bt), size);
   // fl_remove(bt);
 
   size_t oldsz = bt_size(bt);
@@ -263,7 +263,7 @@ int mm_init(void) {
 
 /* --=[ malloc ]=----------------------------------------------------------- */
 
-#if 1
+#if 0
 /* First fit startegy. */
 static word_t *find_fit(size_t reqsz) {
   if (!heap_start) {
@@ -327,7 +327,7 @@ static word_t *find_fit(size_t reqsz) {
     word_t *result = NULL;
     int best = 0x7fffffff;
     do {
-      // msg("loop\n");
+      msg("loop\n");
       if (bt_size(bt) == reqsz) {
         msg("free block of exact size\n");
         fl_remove(bt);
@@ -337,18 +337,17 @@ static word_t *find_fit(size_t reqsz) {
       } else if (bt_size(bt) > reqsz) {
         int val = bt_size(bt) - reqsz;
         if (val < best) {
-          // msg("new bestfit");
+          debug("old best: %d new bestfit: %d", best, val);
           best = val;
           result = bt;
-        } else {
-          bt = fl_next(bt);
         }
       }
+      bt = fl_next(bt);
     } while (bt != free_list);
 
     if (result) {
       bt = result;
-      msg("alloc with split\n");
+      debug("alloc with split, size=%ld, reqsize=%ld", bt_size(bt), reqsz);
       split_block(bt, reqsz);
       bt_flags flags = bt_get_prevfree(bt) | USED;
       bt_make(bt, reqsz, flags);
@@ -456,7 +455,7 @@ void *realloc(void *old_ptr, size_t size) {
   size_t reqsz = blksz(size);
   if (next && bt_free(next) && bt_size(bt) + bt_size(next) >= reqsz) {
     size_t addsize = reqsz - bt_size(bt);
-    debug("addsize: %ld", addsize);
+    // debug("addsize: %ld", addsize);
     if (bt_size(next) - addsize > 0)
       split_block(next, addsize);
 
@@ -465,7 +464,7 @@ void *realloc(void *old_ptr, size_t size) {
     merge_blocks(bt, next);
     // msg("merged\n");
 
-    debug("ptr: %d, next: %d", *bt, *next);
+    // debug("ptr: %d, next: %d", *bt, *next);
 
     next = bt_next(bt);
     if (next)
