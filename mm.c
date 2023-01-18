@@ -10,6 +10,8 @@
 #include "mm.h"
 #include "memlib.h"
 
+#define SMALL_BLOCK 128
+#define SBRK_MIN 512
 /* If you want debugging output, use the following macro.
  * When you hand in, remove the #define DEBUG line. */
 #define VERBOSE 0
@@ -86,13 +88,13 @@ static inline bt_flags bt_get_prevfree(word_t *bt) {
 }
 
 static inline void bt_clr_prevfree(word_t *bt) {
-  // debug("%d", *bt);
+  debug("%d", *bt);
   if (bt)
     *bt &= ~PREVFREE;
 }
 
 static inline void bt_set_prevfree(word_t *bt) {
-  // debug("%d", *bt);
+  debug("%d", *bt);
   *bt |= PREVFREE;
 }
 
@@ -122,38 +124,30 @@ static inline word_t *bt_prev(word_t *bt) {
 /* --=[ free list ]=-------------------------------------------- */
 
 static inline word_t *fl_next(word_t *bt) {
-  // debug("%d", *bt);
-  word_t **ptr = (void *)bt + sizeof(word_t);
-  word_t *next = *ptr;
+  debug("%d", *bt);
+  word_t *ptr = (void *)bt + sizeof(word_t);
+  word_t *next = (void *)heap_start + *ptr;
   return next;
 }
 
-static inline word_t *fl_find_prev(word_t *bt) {
-  // debug("%d", *bt);
-  if (!free_list)
-    return NULL;
-  word_t *i = free_list;
-  do {
-    if (fl_next(i) == bt)
-      return i;
-    i = fl_next(i);
-  } while (i != free_list);
-  msg("block not in free list\n");
-  exit(EXIT_FAILURE);
-  return NULL;
+static inline word_t *fl_prev(word_t *bt) {
+  debug("%d", *bt);
+  word_t *ptr = (void *)bt + 2 * sizeof(word_t);
+  word_t *prev = (void *)heap_start + *ptr;
+  return prev;
 }
 
 static inline void fl_set_next(word_t *bt, word_t *next) {
-  // debug("%d, %d", *bt, *next);
-  word_t **ptr = (void *)bt + sizeof(word_t);
-  *ptr = next;
+  debug("%d", *bt);
+  word_t *ptr = (void *)bt + sizeof(word_t);
+  *ptr = (void *)next - (void *)heap_start;
 }
 
-// static inline void fl_set_prev(word_t *bt, word_t *prev) {
-//   // debug("%d", *bt);
-//   word_t **ptr = (void *)bt + sizeof(word_t) + sizeof(word_t *);
-//   *ptr = prev;
-// }
+static inline void fl_set_prev(word_t *bt, word_t *prev) {
+  debug("%d", *bt);
+  word_t *ptr = (void *)bt + sizeof(word_t) + sizeof(word_t);
+  *ptr = (void *)prev - (void *)heap_start;
+}
 
 static inline int fl_search(word_t *bt) {
   // debug("%d", *bt);
@@ -168,36 +162,41 @@ static inline int fl_search(word_t *bt) {
   return 0;
 }
 
-static inline void fl_add(word_t *bt) { // na początek jest lepiej niż na koniec
-  // debug("%d", *bt);
+static inline void fl_add(word_t *bt) {
+  debug("%d", *bt);
   if (free_list) {
-    word_t *next = fl_next(free_list);
-    fl_set_next(free_list, bt);
-    fl_set_next(bt, next);
-    // free_list = next; // wstaw na koniec
+    word_t *prev = fl_prev(free_list);
+    fl_set_next(prev, bt);
+    fl_set_next(bt, free_list);
+    fl_set_prev(bt, prev);
+    fl_set_prev(free_list, bt);
+    free_list = bt;
   } else {
     fl_set_next(bt, bt);
-    // free_list = bt; // wstaw na koniec
+    fl_set_prev(bt, bt);
+    free_list = bt;
   }
-  free_list = bt; // wstaw na początek
 }
 
 static inline void fl_remove(word_t *bt) {
-  // debug("%d", *bt);
+  debug("%d", *bt);
 
-  // if (!fl_search(bt)) {
-  //   msg("no such block on the list :(\n");
-  //   exit(EXIT_FAILURE);
-  // }
+  if (!fl_search(bt)) {
+    msg("no such block on the list :(\n");
+    exit(EXIT_FAILURE);
+  }
 
   if (!free_list) {
   } else if (bt == fl_next(bt)) {
-    // msg("free list: remove last\n");
+    msg("free list: remove last\n");
     free_list = NULL;
   } else {
-    // msg("free list remove - basic case\n");
-    word_t *prev = fl_find_prev(bt);
+    msg("free list remove - basic case\n");
+    word_t *prev = fl_prev(bt);
+    // word_t *prev = bt;
     word_t *next = fl_next(bt);
+    // debug("%d, %d\n", *prev, *next);
+    fl_set_prev(next, prev);
     fl_set_next(prev, next);
     if (free_list == bt)
       free_list = next;
@@ -205,7 +204,6 @@ static inline void fl_remove(word_t *bt) {
 }
 
 static inline void merge_blocks(word_t *a, word_t *b) {
-  // debug("%d, %d", *a, *b);
   size_t siz = bt_size(a) + bt_size(b);
   bt_flags flags = bt_getflags(a);
   word_t *footer = (void *)a + siz - sizeof(word_t);
@@ -216,8 +214,9 @@ static inline void merge_blocks(word_t *a, word_t *b) {
 }
 
 static inline void split_block(word_t *bt, size_t size) {
-  // debug("block size: %ld, new size %ld", bt_size(bt), size);
-  // fl_remove(bt);
+  debug("free: size: %ld, next bt %d, prev bt %d", bt_size(bt), *fl_next(bt),
+        *fl_prev(bt));
+  fl_remove(bt);
 
   size_t oldsz = bt_size(bt);
   bt_flags flags = bt_getflags(bt);
@@ -231,7 +230,7 @@ static inline void split_block(word_t *bt, size_t size) {
 
   bt_make(bt_footer(bt), size, flags);
 
-  // fl_add(bt);
+  fl_add(bt);
   fl_add(p);
 }
 
@@ -282,13 +281,13 @@ static word_t *find_fit(size_t reqsz) {
     do {
       // msg("loop\n");
       if (bt_size(bt) == reqsz) {
-        // msg("free block of exact size\n");
+        msg("free block of exact size\n");
         fl_remove(bt);
         bt_flags flags = bt_get_prevfree(bt) | USED;
         bt_make(bt, reqsz, flags);
         return bt;
       } else if (bt_size(bt) > reqsz) {
-        // msg("alloc with split\n");
+        msg("alloc with split\n");
         split_block(bt, reqsz);
         bt_flags flags = bt_get_prevfree(bt) | USED;
         bt_make(bt, reqsz, flags);
@@ -299,7 +298,26 @@ static word_t *find_fit(size_t reqsz) {
       }
     } while (bt != free_list);
   }
-  // msg("alloc using morecore\n");
+  msg("alloc using morecore\n");
+
+  if (reqsz <= SMALL_BLOCK) {
+    msg("small block\n");
+    word_t *res = morecore(SBRK_MIN);
+    word_t *next = (void *)res + reqsz;
+    bt_flags pf = bt_free(last);
+    last = next;
+    heap_end = (void *)res + SBRK_MIN;
+    bt_make(res, reqsz, USED);
+    if (pf)
+      bt_set_prevfree(res);
+    else
+      bt_clr_prevfree(res);
+    bt_make(next, SBRK_MIN - reqsz, FREE);
+    bt_make(bt_footer(next), SBRK_MIN - reqsz, FREE);
+    fl_add(next);
+    return res;
+  }
+
   bt_flags pf = bt_free(last);
   word_t *res = morecore(reqsz);
   last = res;
@@ -329,6 +347,7 @@ static word_t *find_fit(size_t reqsz) {
     word_t *result = NULL;
     int best = 0x7fffffff;
     do {
+      // msg("loop\n");
       if (bt_size(bt) == reqsz) {
         msg("free block of exact size\n");
         fl_remove(bt);
@@ -338,7 +357,7 @@ static word_t *find_fit(size_t reqsz) {
       } else if (bt_size(bt) > reqsz) {
         int val = bt_size(bt) - reqsz;
         if (val < best) {
-          debug("old best: %d new bestfit: %d", best, val);
+          // msg("new bestfit");
           best = val;
           result = bt;
         }
@@ -352,13 +371,31 @@ static word_t *find_fit(size_t reqsz) {
       split_block(bt, reqsz);
       bt_flags flags = bt_get_prevfree(bt) | USED;
       bt_make(bt, reqsz, flags);
-
       fl_remove(bt);
       return bt;
     }
   }
 
   msg("alloc using morecore\n");
+
+  if (reqsz <= SMALL_BLOCK) {
+    msg("small block\n");
+    word_t *res = morecore(SBRK_MIN);
+    word_t *next = (void *)res + reqsz;
+    bt_flags pf = bt_free(last);
+    last = next;
+    heap_end = (void *)res + SBRK_MIN;
+    bt_make(res, reqsz, USED);
+    if (pf)
+      bt_set_prevfree(res);
+    else
+      bt_clr_prevfree(res);
+    bt_make(next, SBRK_MIN - reqsz, FREE);
+    bt_make(bt_footer(next), SBRK_MIN - reqsz, FREE);
+    fl_add(next);
+    return res;
+  }
+
   bt_flags pf = bt_free(last);
   word_t *res = morecore(reqsz);
   last = res;
@@ -405,7 +442,7 @@ void free(void *ptr) {
     // msg("next free\n");
     fl_remove(next);
     merge_blocks(bt, next);
-    // msg("merged with next\n");
+    msg("merged with next\n");
   }
   if (bt_get_prevfree(bt)) {
     word_t *prev = bt_prev(bt);
@@ -413,7 +450,7 @@ void free(void *ptr) {
     fl_remove(prev);
     merge_blocks(prev, bt);
     bt = prev;
-    // msg("merged with prev\n");
+    msg("merged with prev\n");
   }
   fl_add(bt);
   next = bt_next(bt);
@@ -454,18 +491,16 @@ void *realloc(void *old_ptr, size_t size) {
   /* If next block is free we can merge it with old block */
   word_t *next = bt_next(bt);
   size_t reqsz = blksz(size);
-  if (next && bt_free(next) && bt_size(bt) + bt_size(next) >= reqsz) {
+  if (next && bt_free(next) &&
+      bt_size(bt) + bt_size(next) - sizeof(word_t) >= reqsz) {
     size_t addsize = reqsz - bt_size(bt);
-    // debug("addsize: %ld", addsize);
-    if (bt_size(next) - addsize > 0)
+    if (bt_size(next) - addsize > 0) {
+      // msg("split\n");
       split_block(next, addsize);
+    }
 
     fl_remove(next);
-    // msg("removed from free list\n");
     merge_blocks(bt, next);
-    // msg("merged\n");
-
-    // debug("ptr: %d, next: %d", *bt, *next);
 
     next = bt_next(bt);
     if (next)
@@ -488,7 +523,7 @@ void *realloc(void *old_ptr, size_t size) {
 
   /* Free the old block. */
   free(old_ptr);
-  // mm_checkheap(VERBOSE);
+
   return new_ptr;
 }
 
@@ -517,19 +552,11 @@ void mm_checkheap(int verbose) {
     word_t *b = free_list;
     if (free_list) {
       do {
-        debug("free block number %d, size: %ld, next bt %d", i, bt_size(b),
-              *fl_next(b));
-        b = fl_next(b);
+        debug("free block number %d, size: %ld, next bt %d, prev bt %d", i,
+              bt_size(b), *fl_next(b), *fl_prev(b));
+        b = fl_prev(b);
         i++;
       } while (b != free_list);
-    }
-  }
-
-  // Size > 0 and is multiplemof alignment
-  for (word_t *b = heap_start; b; b = bt_next(b)) {
-    if ((int)bt_size(b) <= 0 /*|| bt_size(b)%ALIGNMENT!=0*/) {
-      msg("crazy size :)\n");
-      exit(EXIT_FAILURE);
     }
   }
 
