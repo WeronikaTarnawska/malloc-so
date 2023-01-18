@@ -168,16 +168,18 @@ static inline int fl_search(word_t *bt) {
   return 0;
 }
 
-static inline void fl_add(word_t *bt) { // wstawiamy na początek
+static inline void fl_add(word_t *bt) { // na początek jest lepiej niż na koniec
   // debug("%d", *bt);
   if (free_list) {
     word_t *next = fl_next(free_list);
     fl_set_next(free_list, bt);
     fl_set_next(bt, next);
+    // free_list = next; // wstaw na koniec
   } else {
     fl_set_next(bt, bt);
+    // free_list = bt; // wstaw na koniec
   }
-  free_list = bt;
+  free_list = bt; // wstaw na początek
 }
 
 static inline void fl_remove(word_t *bt) {
@@ -327,7 +329,6 @@ static word_t *find_fit(size_t reqsz) {
     word_t *result = NULL;
     int best = 0x7fffffff;
     do {
-      msg("loop\n");
       if (bt_size(bt) == reqsz) {
         msg("free block of exact size\n");
         fl_remove(bt);
