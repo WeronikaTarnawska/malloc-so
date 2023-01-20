@@ -692,7 +692,8 @@ void mm_checkheap(int verbose) {
   //   int i = 0;
   //   msg("\nHEAP\n");
   //   for (word_t *b = heap_start; b; b = bt_next(b), i++) {
-  //     debug("block number %d, offset: %ld, size: %ld, used: %d, prevfree: %d",
+  //     debug("block number %d, offset: %ld, size: %ld, used: %d, prevfree:
+  //     %d",
   //           i, (long)b - (long)heap_start, bt_size(b), bt_used(b),
   //           bt_get_prevfree(b));
   //   }
@@ -732,7 +733,8 @@ void mm_checkheap(int verbose) {
   //   if (free_list) {
   //     msg("\nFREE LIST\n");
   //     do {
-  //       debug("free block number %d, offset: %ld, size: %ld, next offset %ld, "
+  //       debug("free block number %d, offset: %ld, size: %ld, next offset %ld,
+  //       "
   //             "prev offset %ld",
   //             i, (long)b - (long)heap_start, bt_size(b),
   //             (long)fl_next(b) - (long)heap_start,
@@ -773,8 +775,8 @@ void mm_checkheap(int verbose) {
   //     } while (b != free_list);
   //   }
 
-  //   // Każdy blok oznaczony jako wolny jest na liście wszystkich wolnych bloków.
-  //   for (word_t *b = heap_start; b; b = bt_next(b)) {
+  //   // Każdy blok oznaczony jako wolny jest na liście wszystkich wolnych
+  //   bloków. for (word_t *b = heap_start; b; b = bt_next(b)) {
   //     if (bt_free(b) && !fl_search(b)) {
   //       msg("free block not in free list\n");
   //       exit(EXIT_FAILURE);
@@ -791,7 +793,8 @@ void mm_checkheap(int verbose) {
   //     }
   //   }
 
-  //   // Wskaźnik na poprzedni i następny blok odnoszą się do adresów należących
+  //   // Wskaźnik na poprzedni i następny blok odnoszą się do adresów
+  //   należących
   //   // do zarządzanej sterty.
   //   for (word_t *b = heap_start; b; b = bt_next(b)) {
   //     if (!heap_start)
@@ -806,7 +809,8 @@ void mm_checkheap(int verbose) {
   //     }
   //   }
 
-  //   // Wskaźniki na liście wolnych bloków wskazują na początki wolnych bloków.
+  //   // Wskaźniki na liście wolnych bloków wskazują na początki wolnych
+  //   bloków.
 
   //   // Ostatni blok faktycznie jest ostatni
   //   if (last && bt_next(last)) {
