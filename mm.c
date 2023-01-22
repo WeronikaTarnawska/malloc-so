@@ -19,9 +19,9 @@
 /* If you want debugging output, use the following macro.
  * When you hand in, remove the #define DEBUG line. */
 
-// #define CHECKHEAP
-#define VERBOSE 0
-// #define DEBUG
+#define CHECKHEAP
+#define VERBOSE 1
+#define DEBUG
 
 #ifdef DEBUG
 #define debug(fmt, ...) printf("%s: " fmt "\n", __func__, __VA_ARGS__)
@@ -409,40 +409,6 @@ static word_t *alloc_with_sbrk(size_t reqsz) {
     bt_make(res, reqsz, USED);
     return res;
   }
-
-  /****************************************************************/
-
-  // size_t siz = MAX(SBRK_MIN, reqsz);
-  // word_t *ptr = morecore(siz);
-  // heap_end = (void *)ptr + siz;
-  // bt_make(ptr, siz, FREE);
-  // bt_make(bt_footer(ptr), siz, FREE);
-
-  // word_t *l = last;
-  // if (bt_free(l)) {
-  //   msg("merge\n");
-  //   fl_remove(l);
-  //   merge_blocks(l, ptr);
-  //   ptr = l;
-  // }
-
-  // // if(bt_free(last)){
-  // //   bt_set_prevfree(ptr);
-  // // }
-
-  // last = ptr;
-
-  // if (bt_size(ptr) > reqsz) {
-  //   msg("split\n");
-  //   split_block(ptr, reqsz);
-  //   fl_add(bt_next(ptr));
-  // }
-
-  // bt_make(ptr, bt_size(ptr), USED);
-
-  // return ptr;
-
-  /*********************************************/
 
   if (reqsz < SBRK_MIN) {
     msg("small block\n");
