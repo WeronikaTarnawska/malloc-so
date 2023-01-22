@@ -19,9 +19,9 @@
 /* If you want debugging output, use the following macro.
  * When you hand in, remove the #define DEBUG line. */
 
-#define CHECKHEAP
+// #define CHECKHEAP
 #define VERBOSE 1
-#define DEBUG
+// #define DEBUG
 
 #ifdef DEBUG
 #define debug(fmt, ...) printf("%s: " fmt "\n", __func__, __VA_ARGS__)
