@@ -14,6 +14,8 @@
 // best sbrk_min = 512
 #define SBRK_MIN 512
 #define MIN(x, y) (x < y) ? x : y
+#define MAX(x, y) (x > y) ? x : y
+
 /* If you want debugging output, use the following macro.
  * When you hand in, remove the #define DEBUG line. */
 
@@ -322,20 +324,20 @@ static inline void merge_blocks(word_t *a, word_t *b) {
 
 /* splitting */
 static inline void split_block(word_t *bt, size_t size) {
-  fl_remove(bt);
+  // fl_remove(bt);
   size_t oldsz = bt_size(bt);
   bt_flags flags = bt_getflags(bt);
   bt_make(bt, size, flags);
 
   word_t *p = bt_next(bt);
-  bt_make(p, oldsz - size, flags | PREVFREE);
-  bt_make(bt_footer(p), oldsz - size, flags | PREVFREE);
+  bt_make(p, oldsz - size, flags);
+  bt_make(bt_footer(p), oldsz - size, flags);
   if (bt == last)
     last = p;
 
   bt_make(bt_footer(bt), size, flags);
-  fl_add(bt);
-  fl_add(p);
+  // fl_add(bt);
+  // fl_add(p);
 }
 
 /* --=[ miscellanous procedures ]=------------------------------------------ */
@@ -359,9 +361,11 @@ int mm_init(void) {
   void *ptr = morecore(ALIGNMENT - sizeof(word_t));
   if (!ptr)
     return -1;
-  heap_start = NULL;
+
   heap_end = NULL;
+  heap_start = NULL;
   last = NULL;
+
   free_list = NULL;
   list16 = NULL;
   list32 = NULL;
@@ -374,6 +378,7 @@ int mm_init(void) {
   list4096 = NULL;
   // list8192 = NULL;
   list_more = NULL;
+
   return 0;
 }
 
@@ -404,6 +409,40 @@ static word_t *alloc_with_sbrk(size_t reqsz) {
     bt_make(res, reqsz, USED);
     return res;
   }
+
+  /****************************************************************/
+
+  // size_t siz = MAX(SBRK_MIN, reqsz);
+  // word_t *ptr = morecore(siz);
+  // heap_end = (void *)ptr + siz;
+  // bt_make(ptr, siz, FREE);
+  // bt_make(bt_footer(ptr), siz, FREE);
+
+  // word_t *l = last;
+  // if (bt_free(l)) {
+  //   msg("merge\n");
+  //   fl_remove(l);
+  //   merge_blocks(l, ptr);
+  //   ptr = l;
+  // }
+
+  // // if(bt_free(last)){
+  // //   bt_set_prevfree(ptr);
+  // // }
+
+  // last = ptr;
+
+  // if (bt_size(ptr) > reqsz) {
+  //   msg("split\n");
+  //   split_block(ptr, reqsz);
+  //   fl_add(bt_next(ptr));
+  // }
+
+  // bt_make(ptr, bt_size(ptr), USED);
+
+  // return ptr;
+
+  /*********************************************/
 
   if (reqsz < SBRK_MIN) {
     msg("small block\n");
@@ -458,10 +497,12 @@ static word_t *find_fit(size_t reqsz) {
         return bt;
       } else if (bt_size(bt) > reqsz) {
         msg("alloc with split\n");
+        fl_remove(bt);
         split_block(bt, reqsz);
+        fl_add(bt_next(bt));
         bt_flags flags = bt_get_prevfree(bt) | USED;
         bt_make(bt, reqsz, flags);
-        fl_remove(bt);
+        // fl_remove(bt);
         return bt;
       }
       bt = fl_next(bt);
@@ -558,10 +599,12 @@ void *realloc(void *old_ptr, size_t size) {
       bt_size(bt) + bt_size(next) - sizeof(word_t) >= reqsz) {
     size_t addsize = reqsz - bt_size(bt);
     if (bt_size(next) - addsize > 0) {
+      fl_remove(next);
       split_block(next, addsize);
+      fl_add(bt_next(next));
     }
 
-    fl_remove(next);
+    // fl_remove(next);
     merge_blocks(bt, next);
 
     next = bt_next(bt);
@@ -611,6 +654,8 @@ void mm_checkheap(int verbose) { /* verbose=0: check only; verbose=1: print and
       debug("block number %d, offset: %ld, size: %ld, used: %d, prevfree: %d",
             i, (long)b - (long)heap_start, bt_size(b), bt_used(b),
             bt_get_prevfree(b));
+      if (i > 100)
+        break;
     }
 
     msg("\n");
@@ -658,11 +703,18 @@ void mm_checkheap(int verbose) { /* verbose=0: check only; verbose=1: print and
               (long)fl_prev(b) - (long)heap_start);
         b = fl_next(b);
         i++;
+        if (i > 100)
+          break;
       } while (b != free_list);
     }
     msg("\n");
   }
   if (verbose < 2) {
+    /* last is actually the last block */
+    if (last && bt_next(last)) {
+      perror("last does not point to the last block\n");
+      exit(EXIT_FAILURE);
+    }
 
     /* If prevfree is set then previous block is free and if the block is free
      * then prevfree is set in the next block */
@@ -720,13 +772,6 @@ void mm_checkheap(int verbose) { /* verbose=0: check only; verbose=1: print and
         perror("address outside the heap\n");
         exit(EXIT_FAILURE);
       }
-    }
-
-    // Ostatni blok faktycznie jest ostatni
-    /* last is actually the last block */
-    if (last && bt_next(last)) {
-      perror("last does not point to the last block\n");
-      exit(EXIT_FAILURE);
     }
   }
 }
