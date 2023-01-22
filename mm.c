@@ -1,3 +1,4 @@
+/* Weronika Tarnawska 331171 */
 #include <assert.h>
 #include <limits.h>
 #include <stdio.h>
@@ -17,7 +18,7 @@
  * When you hand in, remove the #define DEBUG line. */
 
 // #define CHECKHEAP
-#define VERBOSE 1
+#define VERBOSE 0
 // #define DEBUG
 
 #ifdef DEBUG
@@ -58,20 +59,23 @@ static word_t *heap_end;   /* Address past last byte of last block */
 static word_t *last;       /* Points at last block */
 
 static word_t *free_list; /* Pointer to the first block in free list */
-static size_t start_class;
-#define LISTNUM_MAX 16384
 
-static word_t *list16;
-static word_t *list32;
-static word_t *list64;
-static word_t *list128;
+static int start_class;
+#define LISTNUM_MAX 8192 // 16384
+
+/* one list of free blocks + pointers to the following size classes on the list
+ */
+static word_t *list16;  /* block size <= 16 bytes */
+static word_t *list32;  /* <= 32 */
+static word_t *list64;  /* <= 64 */
+static word_t *list128; /* etc */
 static word_t *list256;
 static word_t *list512;
 static word_t *list1024;
 static word_t *list2048;
 static word_t *list4096;
 // static word_t *list8192;
-static word_t *list_more;
+static word_t *list_more; /* block size > 4096 */
 
 /* --=[ boundary tag handling ]=-------------------------------------------- */
 
@@ -144,8 +148,8 @@ static inline word_t *bt_prev(word_t *bt) {
 }
 
 /* --=[ free list ]=-------------------------------------------- */
-/* zaokrąglenie w górę do najbliższej potęgi 2 i w dół żeby było nie więcej niż
- * LISTNUM_MAX */
+
+/* round up to nearest power of 2; if result > LISTNUM_MAX return LISTNUM_MAX */
 static inline size_t clp2(size_t x) {
   x = x - 1;
   x = x | (x >> 1);
@@ -157,12 +161,14 @@ static inline size_t clp2(size_t x) {
   return MIN(x + 1, LISTNUM_MAX);
 }
 
+/* select a suitable list for the block of given size_class */
 static inline word_t **choose_class(size_t size_class) {
   debug("size class: %ld", size_class);
   word_t **result = NULL;
   switch (size_class) {
     case 16:
       result = &list16;
+      // result = &list32;
       break;
     case 32:
       result = &list32;
@@ -198,12 +204,14 @@ static inline word_t **choose_class(size_t size_class) {
   return result;
 }
 
+/* next block in the free list */
 static inline word_t *fl_next(word_t *bt) {
   word_t *ptr = (void *)bt + sizeof(word_t);
   word_t *next = (void *)heap_start + *ptr;
   return next;
 }
 
+/* previous block in the free list */
 static inline word_t *fl_prev(word_t *bt) {
   word_t *ptr = (void *)bt + 2 * sizeof(word_t);
   word_t *prev = (void *)heap_start + *ptr;
@@ -220,6 +228,7 @@ static inline void fl_set_prev(word_t *bt, word_t *prev) {
   *ptr = (void *)prev - (void *)heap_start;
 }
 
+/* search free list for the given block, return true if it's there */
 static inline int fl_search(word_t *bt) {
   if (!free_list)
     return 0;
@@ -232,36 +241,32 @@ static inline int fl_search(word_t *bt) {
   return 0;
 }
 
+/* add block to free list */
 static inline void fl_add(word_t *bt) {
   size_t listnum = clp2(bt_size(bt));
   word_t **list = choose_class(listnum);
-  // msg("xddd 1\n");
   if (!free_list) {
-    /* jeśli nie ma żadnych wolnych bloków to robimy pętelkę :) */
+    /* no free blocks yet */
     fl_set_next(bt, bt);
     fl_set_prev(bt, bt);
     free_list = bt;
     *list = bt;
     return;
   } else {
-    // msg("xddd2 \n");
     word_t *next = NULL;
     if (*list) {
-      // msg("xddd 3\n");
-      /* wstawiamy na początek list bloków tego rozmiaru jeśli ta lista już
-       * istnieje */
+      /* put the block at the front of it's free list */
       next = *list;
     } else {
-      // msg("xddd 4\n");
-      /* jeśli jest lista większych bloków to wstawiamy przed nią */
+      /* no blocks on this free list yet */
+      /* if there is a list of larger blocks, put the block before the larger
+       * size class */
       for (size_t i = listnum; !next && i <= LISTNUM_MAX; i *= 2) {
         word_t **nextlist = choose_class(i);
-        // msg("xddd 5\n");
         next = *nextlist;
       }
-      /* jeśli nie ma większych bloków to wstawiamy na koniec */
+      /* if there are no larger blocks, put the block at the end of free list */
       if (!next) {
-        // msg("fl_add: add at the end\n");
         next = free_list;
       }
     }
@@ -278,16 +283,16 @@ static inline void fl_add(word_t *bt) {
   }
 }
 
+/* remove block from the free list */
 static inline void fl_remove(word_t *bt) {
   size_t listnum = clp2(bt_size(bt));
   word_t **list = choose_class(listnum);
   if (!free_list) {
   } else if (bt == fl_next(bt)) {
-    // msg("fl_remove: last\n");
+    /* remove last block */
     free_list = NULL;
     *list = NULL;
   } else {
-    // msg("fl_remove: else\n");
     word_t *prev = fl_prev(bt);
     word_t *next = fl_next(bt);
     fl_set_prev(next, prev);
@@ -304,6 +309,7 @@ static inline void fl_remove(word_t *bt) {
   }
 }
 
+/* coalescing */
 static inline void merge_blocks(word_t *a, word_t *b) {
   size_t siz = bt_size(a) + bt_size(b);
   bt_flags flags = bt_getflags(a);
@@ -314,10 +320,9 @@ static inline void merge_blocks(word_t *a, word_t *b) {
     last = a;
 }
 
+/* splitting */
 static inline void split_block(word_t *bt, size_t size) {
-  msg("split\n");
   fl_remove(bt);
-  msg("fl_remove ok\n");
   size_t oldsz = bt_size(bt);
   bt_flags flags = bt_getflags(bt);
   bt_make(bt, size, flags);
@@ -330,9 +335,7 @@ static inline void split_block(word_t *bt, size_t size) {
 
   bt_make(bt_footer(bt), size, flags);
   fl_add(bt);
-  msg("fl_add(bt) ok\n");
   fl_add(p);
-  msg("fl_add(p) ok\n");
 }
 
 /* --=[ miscellanous procedures ]=------------------------------------------ */
@@ -356,7 +359,6 @@ int mm_init(void) {
   void *ptr = morecore(ALIGNMENT - sizeof(word_t));
   if (!ptr)
     return -1;
-  msg("\nxddddddddddd xdddddddddddddd xddddddddddddd \n\n");
   heap_start = NULL;
   heap_end = NULL;
   last = NULL;
@@ -370,13 +372,70 @@ int mm_init(void) {
   list1024 = NULL;
   list2048 = NULL;
   list4096 = NULL;
+  // list8192 = NULL;
   list_more = NULL;
   return 0;
 }
 
 /* --=[ malloc ]=----------------------------------------------------------- */
 
-#if 1
+static word_t *alloc_with_sbrk(size_t reqsz) {
+  msg("alloc using morecore\n");
+
+  if (!heap_start) {
+    msg("\n!heap_start!\n");
+    if (reqsz < SBRK_MIN) {
+      msg("small block\n");
+      word_t *res = morecore(SBRK_MIN);
+      word_t *next = (void *)res + reqsz;
+      heap_start = res;
+      last = next;
+      heap_end = (void *)res + SBRK_MIN;
+      bt_make(res, reqsz, USED);
+      bt_make(next, SBRK_MIN - reqsz, FREE);
+      bt_make(bt_footer(next), SBRK_MIN - reqsz, FREE);
+      fl_add(next);
+      return res;
+    }
+    word_t *res = morecore(reqsz);
+    last = res;
+    heap_end = (void *)last + reqsz;
+    heap_start = res;
+    bt_make(res, reqsz, USED);
+    return res;
+  }
+
+  if (reqsz < SBRK_MIN) {
+    msg("small block\n");
+    word_t *res = morecore(SBRK_MIN);
+    word_t *next = (void *)res + reqsz;
+    bt_flags pf = bt_free(last);
+    last = next;
+    heap_end = (void *)res + SBRK_MIN;
+    bt_make(res, reqsz, USED);
+    if (pf)
+      bt_set_prevfree(res);
+    else
+      bt_clr_prevfree(res);
+    bt_make(next, SBRK_MIN - reqsz, FREE);
+    bt_make(bt_footer(next), SBRK_MIN - reqsz, FREE);
+    fl_add(next);
+    return res;
+  }
+
+  bt_flags pf = bt_free(last);
+  word_t *res = morecore(reqsz);
+  last = res;
+  heap_end = (void *)last + reqsz;
+  bt_make(res, reqsz, USED);
+  if (pf)
+    bt_set_prevfree(res);
+  else
+    bt_clr_prevfree(res);
+
+  return res;
+}
+
 /* First fit startegy. */
 static word_t *find_fit(size_t reqsz) {
 
@@ -410,159 +469,16 @@ static word_t *find_fit(size_t reqsz) {
         break;
     }
   }
-
-  msg("alloc using morecore\n");
-
-  if (!heap_start) {
-    msg("\n!heap_start!\n");
-    if (reqsz < SBRK_MIN) {
-      msg("small block\n");
-      word_t *res = morecore(SBRK_MIN);
-      word_t *next = (void *)res + reqsz;
-      heap_start = res;
-      last = next;
-      heap_end = (void *)res + SBRK_MIN;
-      bt_make(res, reqsz, USED);
-      bt_make(next, SBRK_MIN - reqsz, FREE);
-      bt_make(bt_footer(next), SBRK_MIN - reqsz, FREE);
-      fl_add(next);
-      return res;
-    }
-    word_t *res = morecore(reqsz);
-    last = res;
-    heap_end = (void *)last + reqsz;
-    heap_start = res;
-    bt_make(res, reqsz, USED);
-    return res;
-  }
-
-  if (reqsz < SBRK_MIN) {
-    msg("small block\n");
-    word_t *res = morecore(SBRK_MIN);
-    word_t *next = (void *)res + reqsz;
-    bt_flags pf = bt_free(last);
-    last = next;
-    heap_end = (void *)res + SBRK_MIN;
-    bt_make(res, reqsz, USED);
-    if (pf)
-      bt_set_prevfree(res);
-    else
-      bt_clr_prevfree(res);
-    bt_make(next, SBRK_MIN - reqsz, FREE);
-    bt_make(bt_footer(next), SBRK_MIN - reqsz, FREE);
-    fl_add(next);
-    return res;
-  }
-
-  bt_flags pf = bt_free(last);
-  word_t *res = morecore(reqsz);
-  last = res;
-  heap_end = (void *)last + reqsz;
-  bt_make(res, reqsz, USED);
-  if (pf)
-    bt_set_prevfree(res);
-  else
-    bt_clr_prevfree(res);
-
-  return res;
+  return NULL;
 }
-#else
-/* Best fit startegy. */
-static word_t *find_fit(size_t reqsz) {
-
-  if (free_list) {
-    size_t size_class = clp2(reqsz);
-    debug("req size: %ld, size class: %ld", reqsz, size_class);
-    word_t *bt = NULL;
-    for (size_t i = size_class; !bt && i <= LISTNUM_MAX; i *= 2) {
-      word_t **nextlist = choose_class(i);
-      bt = *nextlist;
-    }
-
-    while (bt) {
-      // msg("loop\n");
-      if (bt_size(bt) == reqsz) {
-        msg("free block of exact size\n");
-        fl_remove(bt);
-        bt_flags flags = bt_get_prevfree(bt) | USED;
-        bt_make(bt, reqsz, flags);
-        return bt;
-      } else if (bt_size(bt) > reqsz) {
-        msg("alloc with split\n");
-        split_block(bt, reqsz);
-        bt_flags flags = bt_get_prevfree(bt) | USED;
-        bt_make(bt, reqsz, flags);
-        fl_remove(bt);
-        return bt;
-      }
-      bt = fl_next(bt);
-      if (bt == free_list)
-        break;
-    }
-  }
-
-  msg("alloc using morecore\n");
-
-  if (!heap_start) {
-    msg("\n!heap_start!\n");
-    if (reqsz < SBRK_MIN) {
-      msg("small block\n");
-      word_t *res = morecore(SBRK_MIN);
-      word_t *next = (void *)res + reqsz;
-      heap_start = res;
-      last = next;
-      heap_end = (void *)res + SBRK_MIN;
-      bt_make(res, reqsz, USED);
-      bt_make(next, SBRK_MIN - reqsz, FREE);
-      bt_make(bt_footer(next), SBRK_MIN - reqsz, FREE);
-      fl_add(next);
-      return res;
-    }
-    word_t *res = morecore(reqsz);
-    last = res;
-    heap_end = (void *)last + reqsz;
-    heap_start = res;
-    bt_make(res, reqsz, USED);
-    return res;
-  }
-
-  if (reqsz < SBRK_MIN) {
-    msg("small block\n");
-    word_t *res = morecore(SBRK_MIN);
-    word_t *next = (void *)res + reqsz;
-    bt_flags pf = bt_free(last);
-    last = next;
-    heap_end = (void *)res + SBRK_MIN;
-    bt_make(res, reqsz, USED);
-    if (pf)
-      bt_set_prevfree(res);
-    else
-      bt_clr_prevfree(res);
-    bt_make(next, SBRK_MIN - reqsz, FREE);
-    bt_make(bt_footer(next), SBRK_MIN - reqsz, FREE);
-    fl_add(next);
-    return res;
-  }
-
-  bt_flags pf = bt_free(last);
-  word_t *res = morecore(reqsz);
-  last = res;
-  heap_end = (void *)last + reqsz;
-  bt_make(res, reqsz, USED);
-  if (pf)
-    bt_set_prevfree(res);
-  else
-    bt_clr_prevfree(res);
-
-  return res;
-}
-#endif
 
 void *malloc(size_t size) {
   size_t reqsz = blksz(size);
   debug("MALLOC size: %ld", reqsz);
   word_t *fit = find_fit(reqsz);
-
+  if (!fit) {
+    fit = alloc_with_sbrk(reqsz);
+  }
   word_t *next = bt_next(fit);
   if (next)
     bt_clr_prevfree(next);
@@ -602,8 +518,6 @@ void free(void *ptr) {
   }
   msg("freed :)\n");
   checkheap();
-  if (!heap_start)
-    msg("\n\n!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n\n");
 }
 
 /* --=[ realloc ]=---------------------------------------------------------- */
@@ -635,6 +549,7 @@ void *realloc(void *old_ptr, size_t size) {
   //   bt_make(bt, bt_size(bt) + reqsz, bt_getflags(bt));
   //   heap_end = (void *)bt + bt_size(bt);
   // }
+  /* That turned out to be a bad idea :( */
 
   /* If next block is free we can merge it with old block */
   word_t *next = bt_next(bt);
@@ -686,150 +601,132 @@ void *calloc(size_t nmemb, size_t size) {
 
 /* --=[ mm_checkheap ]=----------------------------------------------------- */
 
-void mm_checkheap(int verbose) {
-  // // Printy
-  // if (verbose) {
-  //   int i = 0;
-  //   msg("\nHEAP\n");
-  //   for (word_t *b = heap_start; b; b = bt_next(b), i++) {
-  //     debug("block number %d, offset: %ld, size: %ld, used: %d, prevfree:
-  //     %d",
-  //           i, (long)b - (long)heap_start, bt_size(b), bt_used(b),
-  //           bt_get_prevfree(b));
-  //   }
+void mm_checkheap(int verbose) { /* verbose=0: check only; verbose=1: print and
+                                    check; verbose=2: print only */
+  /* Print heap state and list of free blocks */
+  if (verbose) {
+    int i = 0;
+    msg("\nHEAP\n");
+    for (word_t *b = heap_start; b; b = bt_next(b), i++) {
+      debug("block number %d, offset: %ld, size: %ld, used: %d, prevfree: %d",
+            i, (long)b - (long)heap_start, bt_size(b), bt_used(b),
+            bt_get_prevfree(b));
+    }
 
-  //   msg("\n");
+    msg("\n");
 
-  //   if (list16) {
-  //     debug("list16 offset %ld", (long)list16 - (long)heap_start);
-  //   }
-  //   if (list32) {
-  //     debug("list32 offset %ld", (long)list32 - (long)heap_start);
-  //   }
-  //   if (list64) {
-  //     debug("list64 offset %ld", (long)list64 - (long)heap_start);
-  //   }
-  //   if (list128) {
-  //     debug("list128 offset %ld", (long)list128 - (long)heap_start);
-  //   }
-  //   if (list256) {
-  //     debug("list256 offset %ld", (long)list256 - (long)heap_start);
-  //   }
-  //   if (list512) {
-  //     debug("list512 offset %ld", (long)list512 - (long)heap_start);
-  //   }
-  //   if (list1024) {
-  //     debug("list1024 offset %ld", (long)list1024 - (long)heap_start);
-  //   }
-  //   if (list2048) {
-  //     debug("list2048 offset %ld", (long)list2048 - (long)heap_start);
-  //   }
-  //   if (list_more) {
-  //     debug("list more offset %ld", (long)list_more - (long)heap_start);
-  //   }
+    if (list16) {
+      debug("list16 offset %ld", (long)list16 - (long)heap_start);
+    }
+    if (list32) {
+      debug("list32 offset %ld", (long)list32 - (long)heap_start);
+    }
+    if (list64) {
+      debug("list64 offset %ld", (long)list64 - (long)heap_start);
+    }
+    if (list128) {
+      debug("list128 offset %ld", (long)list128 - (long)heap_start);
+    }
+    if (list256) {
+      debug("list256 offset %ld", (long)list256 - (long)heap_start);
+    }
+    if (list512) {
+      debug("list512 offset %ld", (long)list512 - (long)heap_start);
+    }
+    if (list1024) {
+      debug("list1024 offset %ld", (long)list1024 - (long)heap_start);
+    }
+    if (list2048) {
+      debug("list2048 offset %ld", (long)list2048 - (long)heap_start);
+    }
+    if (list4096) {
+      debug("list4096 offset %ld", (long)list4096 - (long)heap_start);
+    }
+    if (list_more) {
+      debug("list more offset %ld", (long)list_more - (long)heap_start);
+    }
 
-  //   i = 0;
-  //   word_t *b = free_list;
-  //   if (free_list) {
-  //     msg("\nFREE LIST\n");
-  //     do {
-  //       debug("free block number %d, offset: %ld, size: %ld, next offset %ld,
-  //       "
-  //             "prev offset %ld",
-  //             i, (long)b - (long)heap_start, bt_size(b),
-  //             (long)fl_next(b) - (long)heap_start,
-  //             (long)fl_prev(b) - (long)heap_start);
-  //       b = fl_next(b);
-  //       i++;
-  //       if (i > 10)
-  //         exit(1);
-  //     } while (b != free_list);
-  //   }
-  //   msg("\n");
-  // }
-  // if (verbose < 2) {
-  //   // If prevfree is set then previous block is free
-  //   // and if the block is free then prevfree is set in the next block
-  //   for (word_t *b = heap_start; b; b = bt_next(b)) {
-  //     word_t *n = bt_next(b);
-  //     if (bt_free(b) && n && !bt_get_prevfree(n)) {
-  //       debug("%d", *b);
-  //       msg("block free, but prevfree not set in the next block\n");
-  //       exit(EXIT_FAILURE);
-  //     }
-  //     if (bt_used(b) && n && bt_get_prevfree(n)) {
-  //       msg("prevfree set, but previous block is used\n");
-  //       exit(EXIT_FAILURE);
-  //     }
-  //   }
+    i = 0;
+    word_t *b = free_list;
+    if (free_list) {
+      msg("\nFREE LIST\n");
+      do {
+        debug("free block number %d, offset: %ld, size: %ld, next offset %ld, "
+              "prev offset %ld",
+              i, (long)b - (long)heap_start, bt_size(b),
+              (long)fl_next(b) - (long)heap_start,
+              (long)fl_prev(b) - (long)heap_start);
+        b = fl_next(b);
+        i++;
+      } while (b != free_list);
+    }
+    msg("\n");
+  }
+  if (verbose < 2) {
 
-  //   // Każdy blok na liście wolnych bloków jest oznaczony jako wolny.
-  //   word_t *b = free_list;
-  //   if (free_list) {
-  //     do {
-  //       if (bt_used(b)) {
-  //         msg("used block in free list\n");
-  //         exit(EXIT_FAILURE);
-  //       }
-  //       b = fl_next(b);
-  //     } while (b != free_list);
-  //   }
+    /* If prevfree is set then previous block is free and if the block is free
+     * then prevfree is set in the next block */
+    for (word_t *b = heap_start; b; b = bt_next(b)) {
+      word_t *n = bt_next(b);
+      if (bt_free(b) && n && !bt_get_prevfree(n)) {
+        debug("%d", *b);
+        perror("block free, but prevfree not set in the next block\n");
+        exit(EXIT_FAILURE);
+      }
+      if (bt_used(b) && n && bt_get_prevfree(n)) {
+        perror("prevfree set, but previous block is used\n");
+        exit(EXIT_FAILURE);
+      }
+    }
 
-  //   // Każdy blok oznaczony jako wolny jest na liście wszystkich wolnych
-  //   bloków. for (word_t *b = heap_start; b; b = bt_next(b)) {
-  //     if (bt_free(b) && !fl_search(b)) {
-  //       msg("free block not in free list\n");
-  //       exit(EXIT_FAILURE);
-  //     }
-  //   }
+    /* Every block on the free list is marked FREE */
+    word_t *b = free_list;
+    if (free_list) {
+      do {
+        if (bt_used(b)) {
+          perror("used block in free list\n");
+          exit(EXIT_FAILURE);
+        }
+        b = fl_next(b);
+      } while (b != free_list);
+    }
 
-  //   // Nie istnieją dwa przyległe do siebie bloki, które są wolne.
-  //   for (word_t *b = heap_start; b; b = bt_next(b)) {
-  //     if (!heap_start)
-  //       break;
-  //     if (bt_free(b) && bt_get_prevfree(b)) {
-  //       msg("two contiguous free blocks\n");
-  //       exit(EXIT_FAILURE);
-  //     }
-  //   }
+    /* Every free block is on the free list */
+    for (word_t *b = heap_start; b; b = bt_next(b)) {
+      if (bt_free(b) && !fl_search(b)) {
+        perror("free block not in free list\n");
+        exit(EXIT_FAILURE);
+      }
+    }
 
-  //   // Wskaźnik na poprzedni i następny blok odnoszą się do adresów
-  //   należących
-  //   // do zarządzanej sterty.
-  //   for (word_t *b = heap_start; b; b = bt_next(b)) {
-  //     if (!heap_start)
-  //       break;
-  //     word_t *p = bt_prev(b);
-  //     word_t *n = bt_next(b);
-  //     if ((p && (void *)p < (void *)heap_start) ||
-  //         (n && (void *)n > (void *)heap_end)) {
-  //       // debug("prev %d, this %d, next %d", *p, *b, *n);
-  //       msg("address not in heap\n");
-  //       exit(EXIT_FAILURE);
-  //     }
-  //   }
+    /* There are no two consecutive free blocks */
+    for (word_t *b = heap_start; b; b = bt_next(b)) {
+      if (!heap_start)
+        break;
+      if (bt_free(b) && bt_get_prevfree(b)) {
+        perror("two contiguous free blocks\n");
+        exit(EXIT_FAILURE);
+      }
+    }
 
-  //   // Wskaźniki na liście wolnych bloków wskazują na początki wolnych
-  //   bloków.
+    /* next and prev pointers point to addresses inside head boundaries*/
+    for (word_t *b = heap_start; b; b = bt_next(b)) {
+      if (!heap_start)
+        break;
+      word_t *p = bt_prev(b);
+      word_t *n = bt_next(b);
+      if ((p && (void *)p < (void *)heap_start) ||
+          (n && (void *)n > (void *)heap_end)) {
+        perror("address outside the heap\n");
+        exit(EXIT_FAILURE);
+      }
+    }
 
-  //   // Ostatni blok faktycznie jest ostatni
-  //   if (last && bt_next(last)) {
-  //     msg("last does not point to the last block\n");
-  //     exit(EXIT_FAILURE);
-  //   }
-  //   if (!heap_start || !heap_end) {
-  //     msg("fucked up pointers to heap start and end");
-  //     exit(EXIT_FAILURE);
-  //   }
-
-  //   // Free lists pointers piont to FIRST element of the list
-
-  //   // Pointers to corresponding sizes
-
-  //   // NULL if no elems of the size
-
-  //   // Not NULL if there is any elem of the size
-
-  //   // Sorted
-  // }
+    // Ostatni blok faktycznie jest ostatni
+    /* last is actually the last block */
+    if (last && bt_next(last)) {
+      perror("last does not point to the last block\n");
+      exit(EXIT_FAILURE);
+    }
+  }
 }
